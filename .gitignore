@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时数据（首次运行自动生成，含敏感信息，勿提交）
+data/secret.key
+data/users.db

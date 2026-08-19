@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>红豆泥</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><img src="/static/favicon.svg" class="brand-icon" alt="">红豆泥</div>
+    <div class="user-area" id="user-area" style="display:none">
+      <span id="user-info" class="user-info"></span>
+      <button id="btn-logout" class="btn ghost">退出</button>
+    </div>
+  </header>
+
+  <!-- 整页登录门禁 -->
+  <div id="auth-gate" class="auth-gate">
+    <div class="auth-card">
+      <h1 class="auth-brand"><img src="/static/favicon.svg" class="brand-icon-lg" alt="">红豆泥</h1>
+      <p class="muted" style="text-align:center">登录或注册后即可使用</p>
+      <div class="seg" id="auth-tabs">
+        <button id="tab-login" class="active">登录</button>
+        <button id="tab-register">注册</button>
+      </div>
+      <input type="text" id="auth-username" placeholder="用户名（3-32 字符）" autocomplete="username">
+      <input type="password" id="auth-password" placeholder="密码（至少 6 位）" autocomplete="current-password">
+      <div id="auth-msg" class="auth-msg"></div>
+      <button id="btn-auth-submit" class="btn primary big">登录</button>
+    </div>
+  </div>
+
+  <main class="layout" id="layout" style="display:none">
+    <aside class="sidebar" id="sidebar">
+      <button id="sidebar-toggle" class="sidebar-toggle" type="button">
+        <span>⚙ 识别设置</span>
+        <span class="caret">▾</span>
+      </button>
+      <div class="sidebar-body">
+        <section class="card">
+          <h3>1 · 上传图纸</h3>
+          <input type="file" id="file-input" accept="image/*">
+          <div id="preview-wrap" class="preview-wrap" style="display:none">
+            <img id="preview-img" alt="预览">
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>2 · 画布设置</h3>
+          <div id="canvas-size-section">
+            <label>画布尺寸</label>
+            <div class="seg" id="canvas-size-seg">
+              <button data-size="52" class="active">52×52</button>
+              <button data-size="104">104×104</button>
+            </div>
+          </div>
+          <div id="grid-dims-section">
+            <label>实际图案（行 × 列）</label>
+            <div class="row">
+              <input type="number" id="rows" value="30" min="1" max="52"> 行
+              <input type="number" id="cols" value="30" min="1" max="52"> 列
+            </div>
+            <p class="tip" id="grid-dims-tip">填写实际图案的行列数（必填），系统按此划分网格并取每个格子的主导色匹配色库。</p>
+          </div>
+          <div id="text-threshold-section">
+            <label>深色判定阈值 <span id="text-threshold-val" class="muted">6</span></label>
+            <input type="range" id="text-threshold" min="0" max="10" step="1" value="6">
+            <p class="tip">格子中心深色像素数达到该值才判「有豆」，否则留空。0 = 全部识别不判空白；数值越大越严（浅色豆可能被误判空白）。</p>
+          </div>
+          <div id="dark-threshold-section">
+            <label>颜色深度阈值 <span id="dark-threshold-val" class="muted">130</span></label>
+            <input type="range" id="dark-threshold" min="80" max="220" step="1" value="130">
+            <p class="tip">灰度低于该值的像素才算「深色像素」。值越小越严（只把更深的算深色），越大越宽（浅灰也算深色）。</p>
+          </div>
+        </section>
+
+        <section class="card" id="color-preselect-section">
+          <h3>3 · 颜色预选</h3>
+          <div id="series-tabs" class="series-tabs"></div>
+          <div id="color-picker" class="color-picker"></div>
+          <div class="row between">
+            <span id="sel-count" class="muted">已选 0 色</span>
+            <button id="btn-clear-sel" class="btn ghost small">清空</button>
+          </div>
+          <p class="tip">不选则使用全部 221 色。</p>
+          <label>自动识别颜色种类上限（0 = 不限制）</label>
+          <input type="number" id="max-colors" value="0" min="0" max="221">
+          <p class="tip">识别出的颜色超过上限时，自动合并为使用最多的前 N 种。</p>
+        </section>
+
+        <button id="btn-recognize" class="btn primary big">🎯 开始识别</button>
+      </div>
+    </aside>
+
+    <section class="canvas-area">
+      <div class="toolbar">
+        <button id="drawer-settings" class="tool drawer-handle" type="button">⚙ 设置</button>
+        <button id="tool-brush" class="tool">🖌 画笔</button>
+        <button id="tool-eraser" class="tool">🧽 橡皮擦</button>
+        <button id="tool-view" class="tool active">🖱 点击</button>
+        <button id="tool-picker" class="tool">💧 取色</button>
+        <span class="bead-count" id="bead-count">共 0 颗</span>
+        <button id="drawer-stats" class="tool drawer-handle" type="button">📊 统计</button>
+        <span class="hint">滚轮缩放 · 点击/拖动改色</span>
+      </div>
+      <div class="canvas-scroll" id="canvas-scroll">
+        <canvas id="canvas"></canvas>
+      </div>
+      <div class="color-bar-wrap">
+        <div class="color-bar" id="color-bar"></div>
+      </div>
+    </section>
+
+    <aside class="stats" id="stats">
+      <button id="stats-toggle" class="stats-toggle" type="button">
+        <span>📊 颜色统计 / 导出</span>
+        <span class="caret">▸</span>
+      </button>
+      <div class="stats-body">
+        <section class="card">
+          <h3>颜色统计</h3>
+          <div id="stats-list" class="stats-list"></div>
+          <div class="stats-total" id="stats-total"></div>
+        </section>
+        <section class="card">
+          <h3>导出</h3>
+          <button id="btn-export-normal" class="btn big">🖼 普通作品图</button>
+          <button id="btn-export-ref" class="btn big">📋 拼豆参考图</button>
+          <p class="tip">参考图含网格线、色号、行列位置与颜色统计。</p>
+        </section>
+      </div>
+    </aside>
+
+    <div id="drawer-mask" class="drawer-mask"></div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
