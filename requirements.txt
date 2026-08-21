@@ -2,5 +2,6 @@ fastapi
 uvicorn[standard]
 pillow
 numpy
+scikit-image
 python-multipart
 jinja2

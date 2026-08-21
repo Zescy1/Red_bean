@@ -4,6 +4,7 @@ import os
 from typing import List, Dict, Tuple, Optional
 
 import numpy as np
+from skimage.color import deltaE_ciede2000
 
 
 # --- CIE Lab Color Space Conversion ---
@@ -254,7 +255,7 @@ class ArtkalPalette:
 
     def find_closest_batch(self, rgb_pixels: np.ndarray,
                            allowed_indices: Optional[np.ndarray] = None) -> np.ndarray:
-        """Find closest palette colors for a batch of pixels using RGB Euclidean distance.
+        """Find closest palette colors for a batch of pixels using CIEDE2000.
 
         Args:
             rgb_pixels: (M, 3) array of RGB values
@@ -263,14 +264,61 @@ class ArtkalPalette:
         Returns:
             (M,) array of palette indices (into self.colors)
         """
+        pixel_lab = rgb_array_to_lab(rgb_pixels)
+
         if allowed_indices is not None:
-            subset = self.rgb_array[allowed_indices]
-            distances = rgb_distance_batch(rgb_pixels, subset)
-            subset_indices = np.argmin(distances, axis=1)
-            return allowed_indices[subset_indices]
+            palette_lab = self.lab_array[allowed_indices]
         else:
-            distances = rgb_distance_batch(rgb_pixels, self.rgb_array)
-            return np.argmin(distances, axis=1)
+            palette_lab = self.lab_array
+
+        # (像素数, 1, 3) 与 (1, 色库数, 3) 广播
+        distances = deltaE_ciede2000(
+            pixel_lab[:, None, :],
+            palette_lab[None, :, :]
+        )
+
+        local_indices = np.argmin(distances, axis=1)
+
+        if allowed_indices is not None:
+            return allowed_indices[local_indices]
+
+        return local_indices
+
+    def find_closest_batch_with_margin(self, rgb_pixels: np.ndarray,
+                                       allowed_indices: Optional[np.ndarray] = None
+                                       ) -> Tuple[np.ndarray, np.ndarray]:
+        """CIEDE2000 最近色匹配，同时返回每格的「模糊度」margin = 次近色距 - 最近色距。
+
+        margin 小说明 top1/top2 两个色很接近（如米白/浅黄这类白色系），颜色匹配不可靠，
+        应交给读色号文字兜底；margin 大说明 top1 明确胜出，颜色匹配可信。
+
+        Returns:
+            (indices, margins)：indices 为 (M,) 色库索引，margins 为 (M,) ΔE 差值。
+        """
+        pixel_lab = rgb_array_to_lab(rgb_pixels)
+
+        if allowed_indices is not None:
+            palette_lab = self.lab_array[allowed_indices]
+        else:
+            palette_lab = self.lab_array
+
+        distances = deltaE_ciede2000(pixel_lab[:, None, :], palette_lab[None, :, :])
+
+        local_indices = np.argmin(distances, axis=1)
+
+        # margin = 次近色距离 - 最近色距离（若候选色 <2 个，则无歧义，margin 设为大值）
+        if distances.shape[1] >= 2:
+            part = np.partition(distances, 1, axis=1)
+            margins = part[:, 1] - part[:, 0]
+        else:
+            margins = np.full(distances.shape[0], np.inf)
+
+        if allowed_indices is not None:
+            indices = allowed_indices[local_indices]
+        else:
+            indices = local_indices
+
+        return indices, margins
 
     def match_batch_threshold(self, rgb_pixels: np.ndarray,
                               allowed_indices: Optional[np.ndarray] = None,

@@ -20,6 +20,10 @@ from .color_match import ArtkalPalette
 _TEXT_DARK = 130
 _TEXT_MIN_PIXELS = 6
 
+# 颜色匹配「模糊度」阈值：top1/top2 的 ΔE 差距 < 此值时判「分不清」，
+# 交视觉模型读印在格子里的色号文字兜底（白色系米白/浅黄/浅粉 margin 通常 < 2.5）。
+_AMBIGUITY_MARGIN = 2.5
+
 
 def _cell_rect(x0: float, y0: float, cell_w: float, cell_h: float,
                r: int, c: int) -> Tuple[int, int, int, int]:
@@ -70,6 +74,29 @@ def _dominant_color(rgb_cell: np.ndarray) -> np.ndarray:
     return np.median(flat[mask], axis=0)
 
 
+def _white_balance(rgb: np.ndarray) -> np.ndarray:
+    """全图白平衡校准：用最亮的 1% 像素（通常是白底）反推全局偏色并校正。
+
+    拍摄时的白平衡/灯光偏色（多为每通道的乘性增益）会让白底被染成非中性色，
+    连带把米白(M4)/浅米黄(G16)这类浅色一起染偏，导致匹配时互相串色。
+    用最亮像素反推每通道增益，还原真实色，再做色号匹配。
+
+    无白底（最亮处仍偏暗）或已接近纯白时跳过校准，避免误伤正常图。
+    """
+    bright = rgb.mean(axis=2)
+    thr = np.percentile(bright, 99)
+    mask = bright >= thr
+    ref = np.median(rgb[mask], axis=0)
+    # 最亮处不够亮（图中无白底/白参考）→ 跳过
+    if float(ref.mean()) < 180:
+        return rgb
+    # 已接近纯白 → 无需校准
+    if np.all(ref > 250):
+        return rgb
+    gain = 255.0 / np.maximum(ref, 1.0)
+    return np.clip(rgb * gain, 0.0, 255.0)
+
+
 def sample_grid(image: Image.Image, rows: int, cols: int,
                 box: Optional[Tuple[float, float, float, float]] = None,
                 text_threshold: int = _TEXT_MIN_PIXELS,
@@ -84,6 +111,7 @@ def sample_grid(image: Image.Image, rows: int, cols: int,
         has_text 为 (rows, cols) bool，标记该格是否有深色内容（空白格为 False）。
     """
     rgb = np.asarray(image.convert("RGB"), dtype=np.float64)
+    rgb = _white_balance(rgb)  # 全图白平衡校准，消除拍摄色偏（对浅色 M4/G16 尤其关键）
     gray = np.asarray(image.convert("L"))
     h, w = rgb.shape[:2]
 
@@ -128,8 +156,8 @@ def recognize(image: Image.Image, palette: ArtkalPalette, canvas_size: int,
               box: Optional[Tuple[float, float, float, float]] = None,
               text_threshold: int = _TEXT_MIN_PIXELS,
               dark_threshold: int = _TEXT_DARK,
-              ) -> List[List[Optional[str]]]:
-    """完整识别流程：采样 -> RGB 最近色匹配 -> 跳过空白格 -> (可选)限制颜色种类。
+              ) -> Tuple[List[List[Optional[str]]], List[Tuple[int, int]]]:
+    """完整识别流程：采样 -> CIEDE2000 最近色匹配 -> 跳过空白格 -> (可选)限制颜色种类。
 
     实际图案 (rows x cols) 放在画布左上角，其余区域为 None (空白)。
     有深色内容的格子总是匹配到最近色号（不做阈值留白）；无深色内容的
@@ -142,7 +170,10 @@ def recognize(image: Image.Image, palette: ArtkalPalette, canvas_size: int,
     按出现频次取前 N 种，再重新映射，保证结果颜色种类不超过 N。
 
     Returns:
-        canvas_size x canvas_size 的网格，元素为色号 code 或 None。
+        (grid, ambiguous_cells)：
+        grid 为 canvas_size x canvas_size 的网格，元素为色号 code 或 None；
+        ambiguous_cells 为 [(r, c), ...] 颜色匹配「模糊」（top1/top2 太近，
+        如米白/浅黄）需读字兜底的格子。
     """
     rgb, has_text = sample_grid(image, rows, cols, box=box,
                                 text_threshold=text_threshold,
@@ -165,13 +196,17 @@ def recognize(image: Image.Image, palette: ArtkalPalette, canvas_size: int,
             allowed = top_indices
 
     # 总是匹配最近色（不做阈值留白）；空白格由 has_text（深色判定）跳过
-    matched = palette.find_closest_batch(flat, allowed_indices=allowed)
+    matched, margins = palette.find_closest_batch_with_margin(flat, allowed_indices=allowed)
     codes = [palette.colors[i]["code"] for i in matched]
 
     grid: List[List[Optional[str]]] = [[None] * canvas_size for _ in range(canvas_size)]
+    ambiguous: List[Tuple[int, int]] = []
     for r in range(rows):
         base = r * cols
         for c in range(cols):
             if text_flat[base + c] and codes[base + c]:
                 grid[r][c] = codes[base + c]
-    return grid
+                # 颜色匹配「模糊」（top1/top2 太近）→ 标记交读字兜底
+                if margins[base + c] < _AMBIGUITY_MARGIN:
+                    ambiguous.append((r, c))
+    return grid, ambiguous

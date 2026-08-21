@@ -23,6 +23,7 @@ from PIL import Image
 from core.color_match import ArtkalPalette
 from core.grid_detect import detect_content_box
 from core.grid_sampler import recognize
+from core.vision_reader import read_cell_codes
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -231,12 +232,23 @@ async def recognize_pattern(
         box = (box_info["x0"], box_info["y0"], box_info["cell_w"], box_info["cell_h"])
 
     try:
-        grid = recognize(image, palette, canvas_size, rows, cols,
-                         allowed_codes, max_colors=max_colors, box=box,
-                         text_threshold=text_threshold,
-                         dark_threshold=dark_threshold)
+        grid, ambiguous = recognize(image, palette, canvas_size, rows, cols,
+                                    allowed_codes, max_colors=max_colors, box=box,
+                                    text_threshold=text_threshold,
+                                    dark_threshold=dark_threshold)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"识别失败: {e}")
+
+    # 颜色匹配「模糊」的格子（米白/浅黄等白色系）→ 视觉模型读印的色号文字兜底
+    vision_read = 0
+    if ambiguous and box is not None:
+        try:
+            read = read_cell_codes(image, box, ambiguous, palette, rows, cols)
+            for (r, c), code in read.items():
+                grid[r][c] = code
+                vision_read += 1
+        except Exception:  # noqa: BLE001
+            pass  # 读字失败则保留颜色匹配结果
 
     return {
         "canvas_size": canvas_size,
@@ -244,4 +256,6 @@ async def recognize_pattern(
         "cols": cols,
         "grid": grid,
         "detected": box_info,
+        "ambiguous_count": len(ambiguous),
+        "vision_read": vision_read,
     }
