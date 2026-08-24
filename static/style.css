@@ -31,7 +31,7 @@ body {
 .brand { font-size: 18px; font-weight: 700; }
 .brand-icon { width: 18px; height: 18px; vertical-align: -3px; margin-right: 4px; }
 .brand-icon-lg { width: 30px; height: 30px; vertical-align: -7px; margin-right: 8px; }
-.user-area { display: flex; align-items: center; gap: 10px; }
+.user-area { position: relative; display: flex; align-items: center; gap: 10px; }
 .user-info { color: var(--muted); font-size: 14px; }
 
 /* 布局 */
@@ -141,6 +141,46 @@ input[type="range"] { width: 100%; margin-top: 6px; accent-color: var(--primary)
 .auth-card { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 32px; width: 360px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 8px 30px #0001; }
 .auth-brand { font-size: 20px; text-align: center; }
 .auth-msg { font-size: 12px; color: var(--accent); min-height: 16px; text-align: center; }
+
+/* 我的作品下拉窗 */
+.works-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 320px;
+  max-width: 88vw;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px #0002;
+  z-index: 60;
+  overflow: hidden;
+}
+.works-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  font-size: 14px; font-weight: 600;
+}
+.works-list {
+  max-height: 50vh; overflow-y: auto; padding: 8px;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.work-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+}
+.work-item:hover { border-color: var(--primary); }
+.work-item .name {
+  font-size: 13px; font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.work-item .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.work-item .del {
+  border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 15px; padding: 4px; flex: 0 0 auto;
+}
+.work-item .del:hover { color: var(--accent); }
+.works-empty { color: var(--muted); font-size: 12px; text-align: center; padding: 16px 0; }
 
 /* === 移动端：左右抽屉 + 画布占满最底层 === */
 @media (max-width: 1024px) {

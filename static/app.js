@@ -19,6 +19,7 @@ const state = {
   authMode: 'login',
   maxColors: 0,           // 自动识别颜色种类上限，0=不限制
   lastRecognizedCodes: [], // 本次识别传入的预选色快照（用于统计含 0 颗显示）
+  recognizeMode: 'smart', // 'smart' 智能识别（含大模型读字兜底）| 'direct' 直接识别（纯颜色匹配）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +47,9 @@ async function api(path, opts = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `请求失败 (${res.status})`);
   return data;
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 function isMobile() { return window.matchMedia('(max-width: 1024px)').matches; }
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
@@ -202,6 +206,7 @@ async function doRecognize() {
   fd.append('max_colors', maxColors);
   fd.append('text_threshold', parseInt($('text-threshold').value, 10) || 0);
   fd.append('dark_threshold', parseInt($('dark-threshold').value, 10) || 130);
+  fd.append('direct', state.recognizeMode === 'direct' ? '1' : '0');
   fd.append('codes', JSON.stringify([...state.selectedCodes]));
 
   const btn = $('btn-recognize');
@@ -544,6 +549,95 @@ function exportRef() {
   download(cv, '拼豆参考图.png');
 }
 
+// ---------- 作品（个人缓存） ----------
+async function saveWork() {
+  if (!state.grid) { alert('请先识别'); return; }
+  const { total } = computeCounts();
+  if (!total) { alert('画布为空，无需转存'); return; }
+  const btn = $('tool-save');
+  const rows = parseInt($('rows').value, 10) || state.canvasSize;
+  const cols = parseInt($('cols').value, 10) || state.canvasSize;
+  const name = `作品 ${new Date().toLocaleString('zh-CN', { hour12: false })}`;
+  btn.disabled = true;
+  try {
+    await api('/api/works', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, canvas_size: state.canvasSize, rows, cols, grid: state.grid }),
+    });
+    btn.textContent = '✓ 已转存';
+    setTimeout(() => { btn.textContent = '💾 转存'; btn.disabled = false; }, 1500);
+  } catch (e) {
+    btn.disabled = false;
+    alert(e.message);
+  }
+}
+
+async function openWorks() {
+  const dd = $('works-dropdown');
+  if (dd.style.display !== 'none') { dd.style.display = 'none'; return; }
+  dd.style.display = 'block';
+  await renderWorks();
+}
+
+async function renderWorks() {
+  const list = $('works-list');
+  list.innerHTML = '<div class="works-empty">加载中…</div>';
+  try {
+    const data = await api('/api/works');
+    if (!data.works.length) {
+      list.innerHTML = '<div class="works-empty">还没有作品。识别满意后点工具栏「💾 转存」即可保存。</div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const w of data.works) {
+      const item = document.createElement('div');
+      item.className = 'work-item';
+      const time = new Date(w.created_at * 1000).toLocaleString('zh-CN', { hour12: false });
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0';
+      const nm = document.createElement('div');
+      nm.className = 'name'; nm.textContent = w.name;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = `${w.rows}×${w.cols} · ${w.canvas_size}画布 · ${time}`;
+      info.appendChild(nm); info.appendChild(meta);
+      const del = document.createElement('button');
+      del.className = 'del'; del.textContent = '🗑'; del.title = '删除';
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (!confirm(`删除作品「${w.name}」？`)) return;
+        try { await api(`/api/works/${w.id}`, { method: 'DELETE' }); renderWorks(); }
+        catch (err) { alert(err.message); }
+      };
+      item.appendChild(info); item.appendChild(del);
+      item.onclick = () => loadWork(w.id);
+      list.appendChild(item);
+    }
+  } catch (e) {
+    list.innerHTML = `<div class="works-empty">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadWork(id) {
+  try {
+    const data = await api(`/api/works/${id}`);
+    state.canvasSize = data.canvas_size;
+    state.grid = data.grid;
+    state.activeCode = null;
+    state.lastRecognizedCodes = [];
+    $('rows').value = data.rows;
+    $('cols').value = data.cols;
+    $('rows').max = $('cols').max = state.canvasSize;
+    $('canvas-size-seg').querySelectorAll('button').forEach(x =>
+      x.classList.toggle('active', parseInt(x.dataset.size, 10) === state.canvasSize));
+    state.cellSize = computeCellSize(state.canvasSize);
+    renderCanvas(); renderColorBar(); renderStats(); updateBeadCount();
+    $('works-dropdown').style.display = 'none';
+    if (isMobile()) closeDrawers();
+  } catch (e) { alert(e.message); }
+}
+
 // ---------- 事件绑定 ----------
 function bindEvents() {
   // 认证
@@ -582,6 +676,14 @@ function bindEvents() {
     };
   });
 
+  // 识别模式（智能 / 直接）
+  $('recognize-mode-seg').querySelectorAll('button').forEach(b => {
+    b.onclick = () => {
+      state.recognizeMode = b.dataset.mode;
+      $('recognize-mode-seg').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+    };
+  });
+
   // 上传
   $('file-input').onchange = onFileChange;
 
@@ -596,6 +698,17 @@ function bindEvents() {
   $('btn-clear-sel').onclick = () => { state.selectedCodes.clear(); renderColorPicker(); updateSelCount(); };
   $('btn-export-normal').onclick = exportNormal;
   $('btn-export-ref').onclick = exportRef;
+
+  // 作品转存 / 我的作品
+  $('tool-save').onclick = saveWork;
+  $('btn-works').onclick = openWorks;
+  $('works-close').onclick = () => { $('works-dropdown').style.display = 'none'; };
+  document.addEventListener('click', (e) => {
+    const dd = $('works-dropdown');
+    if (dd.style.display !== 'none' && !dd.contains(e.target) && e.target !== $('btn-works')) {
+      dd.style.display = 'none';
+    }
+  });
 
   // 画布编辑（多指触控：单指操作工具，双指捏合缩放）
   const canvas = $('canvas');

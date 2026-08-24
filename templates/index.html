@@ -11,8 +11,16 @@
   <header class="topbar">
     <div class="brand"><img src="/static/favicon.svg" class="brand-icon" alt="">红豆泥</div>
     <div class="user-area" id="user-area" style="display:none">
+      <button id="btn-works" class="btn ghost">📁 我的作品</button>
       <span id="user-info" class="user-info"></span>
       <button id="btn-logout" class="btn ghost">退出</button>
+      <div id="works-dropdown" class="works-dropdown" style="display:none">
+        <div class="works-head">
+          <span>我的作品</span>
+          <button id="works-close" class="btn ghost small" type="button">✕</button>
+        </div>
+        <div id="works-list" class="works-list"></div>
+      </div>
     </div>
   </header>
 
@@ -90,6 +98,15 @@
           <p class="tip">识别出的颜色超过上限时，自动合并为使用最多的前 N 种。</p>
         </section>
 
+        <section class="card" id="recognize-mode-section">
+          <h3>识别模式</h3>
+          <div class="seg" id="recognize-mode-seg">
+            <button data-mode="smart" class="active">智能识别</button>
+            <button data-mode="direct">直接识别</button>
+          </div>
+          <p class="tip">智能识别：颜色匹配 + 大模型读字兜底（白色系更准，慢）。直接识别：只按图纸颜色匹配（快，不用大模型）。</p>
+        </section>
+
         <button id="btn-recognize" class="btn primary big">🎯 开始识别</button>
       </div>
     </aside>
@@ -102,6 +119,7 @@
         <button id="tool-view" class="tool active">🖱 点击</button>
         <button id="tool-picker" class="tool">💧 取色</button>
         <span class="bead-count" id="bead-count">共 0 颗</span>
+        <button id="tool-save" class="tool">💾 转存</button>
         <button id="drawer-stats" class="tool drawer-handle" type="button">📊 统计</button>
         <span class="hint">滚轮缩放 · 点击/拖动改色</span>
       </div>

@@ -68,6 +68,17 @@ def _init_db() -> None:
             " password_hash TEXT NOT NULL,"
             " created_at INTEGER NOT NULL)"
         )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS work ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " username TEXT NOT NULL,"
+            " name TEXT NOT NULL,"
+            " canvas_size INTEGER NOT NULL,"
+            " rows INTEGER NOT NULL,"
+            " cols INTEGER NOT NULL,"
+            " grid TEXT NOT NULL,"
+            " created_at INTEGER NOT NULL)"
+        )
 
 
 _init_db()
@@ -162,6 +173,82 @@ async def me(authorization: Optional[str] = Header(None)):
     return {"username": _require_user(authorization)}
 
 
+# ---------- 作品（个人缓存） ----------
+def _work_summary(row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "canvas_size": row["canvas_size"],
+        "rows": row["rows"],
+        "cols": row["cols"],
+        "created_at": row["created_at"],
+    }
+
+
+@app.post("/api/works")
+async def save_work(data: dict, authorization: Optional[str] = Header(None)):
+    username = _require_user(authorization)
+    name = (data.get("name") or "").strip() or "未命名作品"
+    canvas_size = data.get("canvas_size")
+    rows = data.get("rows")
+    cols = data.get("cols")
+    grid = data.get("grid")
+    if canvas_size not in (52, 104):
+        raise HTTPException(400, "画布尺寸只能是 52 或 104")
+    if not isinstance(rows, int) or not isinstance(cols, int) \
+            or not (1 <= rows <= canvas_size and 1 <= cols <= canvas_size):
+        raise HTTPException(400, "行列数不合法")
+    if not isinstance(grid, list) or len(grid) != canvas_size:
+        raise HTTPException(400, "网格数据格式错误")
+    grid_json = json.dumps(grid, ensure_ascii=False)
+    if len(grid_json) > 5_000_000:
+        raise HTTPException(400, "作品数据过大")
+    with _get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO work (username, name, canvas_size, rows, cols, grid, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (username, name[:64], canvas_size, rows, cols, grid_json, int(time.time())),
+        )
+        wid = cur.lastrowid
+    return {"id": wid}
+
+
+@app.get("/api/works")
+async def list_works(authorization: Optional[str] = Header(None)):
+    username = _require_user(authorization)
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, name, canvas_size, rows, cols, created_at FROM work "
+            "WHERE username = ? ORDER BY created_at DESC, id DESC",
+            (username,),
+        ).fetchall()
+    return {"works": [_work_summary(r) for r in rows]}
+
+
+@app.get("/api/works/{wid}")
+async def get_work(wid: int, authorization: Optional[str] = Header(None)):
+    username = _require_user(authorization)
+    with _get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM work WHERE id = ? AND username = ?", (wid, username)
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "作品不存在")
+    return {**_work_summary(row), "grid": json.loads(row["grid"])}
+
+
+@app.delete("/api/works/{wid}")
+async def delete_work(wid: int, authorization: Optional[str] = Header(None)):
+    username = _require_user(authorization)
+    with _get_db() as conn:
+        cur = conn.execute(
+            "DELETE FROM work WHERE id = ? AND username = ?", (wid, username)
+        )
+    if cur.rowcount == 0:
+        raise HTTPException(404, "作品不存在")
+    return {"ok": True}
+
+
 # ---------- 色库 ----------
 _SERIES_ORDER = ["A", "B", "C", "D", "E", "F", "G", "H", "M"]
 
@@ -193,6 +280,7 @@ async def recognize_pattern(
     max_colors: int = Form(0),
     text_threshold: int = Form(6),
     dark_threshold: int = Form(130),
+    direct: int = Form(0),
     authorization: Optional[str] = Header(None),
 ):
     _require_user(authorization)
@@ -239,9 +327,10 @@ async def recognize_pattern(
     except Exception as e:  # noqa: BLE001
         raise HTTPException(500, f"识别失败: {e}")
 
-    # 颜色匹配「模糊」的格子（米白/浅黄等白色系）→ 视觉模型读印的色号文字兜底
+    # 颜色匹配「模糊」的格子（米白/浅黄等白色系）→ 视觉模型读印的色号文字兜底。
+    # direct=1 时为「直接识别」：跳过读字兜底，只按图纸颜色匹配（快、不依赖大模型）。
     vision_read = 0
-    if ambiguous and box is not None:
+    if not direct and ambiguous and box is not None:
         try:
             read = read_cell_codes(image, box, ambiguous, palette, rows, cols)
             for (r, c), code in read.items():
@@ -258,4 +347,5 @@ async def recognize_pattern(
         "detected": box_info,
         "ambiguous_count": len(ambiguous),
         "vision_read": vision_read,
+        "direct": bool(direct),
     }
