@@ -20,6 +20,7 @@ const state = {
   maxColors: 0,           // 自动识别颜色种类上限，0=不限制
   lastRecognizedCodes: [], // 本次识别传入的预选色快照（用于统计含 0 颗显示）
   recognizeMode: 'smart', // 'smart' 智能识别（含大模型读字兜底）| 'direct' 直接识别（纯颜色匹配）
+  smartAllowed: false,    // 是否被授权使用智能识别（后端白名单控制）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -51,7 +52,11 @@ async function api(path, opts = {}) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-function isMobile() { return window.matchMedia('(max-width: 1024px)').matches; }
+function isMobile() {
+  // 竖屏（窄）或横屏（矮）都算移动端：横屏手机宽度可能 >1024px，但高度很小（<520px），
+  // 此时仍应走抽屉布局，否则「设置/统计」的收缩键（sidebar-toggle/stats-toggle）会因断点失效而隐藏。
+  return window.matchMedia('(max-width: 1024px), (max-height: 520px)').matches;
+}
 function toggleSidebar() { $('sidebar').classList.toggle('collapsed'); }
 function collapseSidebar() { $('sidebar').classList.add('collapsed'); }
 function computeCellSize(n) {
@@ -91,14 +96,38 @@ function openAuth(mode) {
   $('layout').style.display = 'none';
   $('user-area').style.display = 'none';
 }
-function applyAuth(token, username) {
+function applyAuth(token, username, smart) {
   state.token = token; state.username = username;
+  state.smartAllowed = !!smart;
   localStorage.setItem('pb_token', token);
   localStorage.setItem('pb_username', username);
   $('user-info').textContent = `👤 ${username}`;
   $('auth-gate').style.display = 'none';
   $('layout').style.display = 'grid';
   $('user-area').style.display = 'flex';
+  applySmartPermission();
+}
+
+// 未授权用户禁用「智能识别」，强制直接识别
+function applySmartPermission() {
+  const seg = $('recognize-mode-seg');
+  const smartBtn = seg.querySelector('[data-mode="smart"]');
+  const directBtn = seg.querySelector('[data-mode="direct"]');
+  const tip = $('recognize-mode-tip');
+  if (state.smartAllowed) {
+    smartBtn.disabled = false;
+    smartBtn.title = '';
+    smartBtn.style.opacity = '';
+    tip.textContent = '智能识别：颜色匹配 + 大模型读字兜底（白色系更准，慢）。直接识别：只按图纸颜色匹配（快，不用大模型）。';
+  } else {
+    smartBtn.disabled = true;
+    smartBtn.title = '智能识别暂未对你的账号开放';
+    smartBtn.style.opacity = '.45';
+    state.recognizeMode = 'direct';
+    smartBtn.classList.remove('active');
+    directBtn.classList.add('active');
+    tip.textContent = '直接识别：只按图纸颜色匹配（快）。智能识别（大模型读字兜底）暂未对你的账号开放。（正在寻找合适的视觉模型）';
+  }
 }
 function logout() {
   state.token = null; state.username = null;
@@ -119,7 +148,7 @@ async function submitAuth() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     });
-    applyAuth(data.token, data.username);
+    applyAuth(data.token, data.username, data.smart);
   } catch (e) { msg.textContent = e.message; }
 }
 
@@ -225,6 +254,38 @@ async function doRecognize() {
   finally { btn.disabled = false; btn.textContent = '🎯 开始识别'; }
 }
 
+// 色号字号：按 10px 基准测宽度并缓存
+const _codeWidthCache = {};
+function codeWidth(ctx, code) {
+  let w = _codeWidthCache[code];
+  if (w === undefined) {
+    const prev = ctx.font;
+    ctx.font = '10px sans-serif';
+    w = ctx.measureText(code).width;
+    ctx.font = prev;
+    _codeWidthCache[code] = w;
+  }
+  return w;
+}
+// 全画布统一字号：按画布中「最宽的色号」反算，保证 H1 / M15 等长短不一的色号一样大
+function gridFontSize(ctx, cellSize) {
+  let maxW = 0;
+  if (state.grid) {
+    const seen = new Set();
+    for (const row of state.grid) {
+      for (const code of row) {
+        if (!code || seen.has(code)) continue;
+        seen.add(code);
+        const w = codeWidth(ctx, code);
+        if (w > maxW) maxW = w;
+      }
+    }
+  }
+  if (!maxW) return 0;
+  // 最宽色号撑到格子宽的 80%，高度不超过格子的 62%
+  return Math.min((cellSize * 0.8) / maxW * 10, cellSize * 0.62);
+}
+
 // ---------- 画布渲染 ----------
 const AXIS = 20;  // 画布外围坐标轴（上方列号 / 左侧行号）宽度
 
@@ -294,20 +355,22 @@ function renderCanvas() {
 
   // 色号文字（居中；高亮模式下只显示选中颜色的文字，其他转灰不显示文字）
   // 文字颜色按格子底色自适应：深色(深度>阈值)用白字，浅色用黑字
-  if (state.grid) {
-    ctx.font = '2.25px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    for (let r = 0; r < n; r++) {
-      for (let c = 0; c < n; c++) {
-        const code = state.grid[r][c];
-        if (!code) continue;
-        // 高亮模式：只显示被选中颜色的文字
-        if (state.activeCode && code !== state.activeCode) continue;
-        ctx.fillStyle = textColorFor(state.codeToColor[code].hex);
-        // 手动按文字实际宽度居中，并微调（右移0.5px）
-        const tw = ctx.measureText(code).width;
-        ctx.fillText(code, c * s + (s - tw) / 2 + 0.5, r * s + s / 2);
+  // 字号全画布统一（按最宽色号反算），随缩放一起放大
+  if (state.grid && s >= 4) {
+    const fs = gridFontSize(ctx, s);
+    if (fs > 0) {
+      ctx.font = `${fs}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let r = 0; r < n; r++) {
+        for (let c = 0; c < n; c++) {
+          const code = state.grid[r][c];
+          if (!code) continue;
+          // 高亮模式：只显示被选中颜色的文字
+          if (state.activeCode && code !== state.activeCode) continue;
+          ctx.fillStyle = textColorFor(state.codeToColor[code].hex);
+          ctx.fillText(code, c * s + s / 2, r * s + s / 2);
+        }
       }
     }
   }
@@ -594,6 +657,10 @@ async function renderWorks() {
       const item = document.createElement('div');
       item.className = 'work-item';
       const time = new Date(w.created_at * 1000).toLocaleString('zh-CN', { hour12: false });
+      const thumb = document.createElement('img');
+      thumb.className = 'thumb';
+      thumb.src = `/api/works/${w.id}/thumb`;
+      thumb.alt = '';
       const info = document.createElement('div');
       info.style.cssText = 'flex:1;min-width:0';
       const nm = document.createElement('div');
@@ -610,8 +677,28 @@ async function renderWorks() {
         try { await api(`/api/works/${w.id}`, { method: 'DELETE' }); renderWorks(); }
         catch (err) { alert(err.message); }
       };
-      item.appendChild(info); item.appendChild(del);
-      item.onclick = () => loadWork(w.id);
+      item.appendChild(thumb); item.appendChild(info); item.appendChild(del);
+
+      // 长按（600ms）重命名；短按载入。长按后抑制随后的 click，避免误载入
+      let pressTimer = null, longPressed = false, sx = 0, sy = 0;
+      const startPress = (e) => {
+        if (e.target === del) return;
+        longPressed = false;
+        sx = e.clientX; sy = e.clientY;
+        pressTimer = setTimeout(() => { longPressed = true; pressTimer = null; renameWork(w); }, 600);
+      };
+      const cancelPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+      item.addEventListener('pointerdown', startPress);
+      item.addEventListener('pointerup', cancelPress);
+      item.addEventListener('pointerleave', cancelPress);
+      item.addEventListener('pointercancel', cancelPress);
+      // 手指轻微抖动不取消长按，滑动超过 10px 才算滚动
+      item.addEventListener('pointermove', (e) => {
+        if (pressTimer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancelPress();
+      });
+      item.addEventListener('contextmenu', (e) => e.preventDefault());  // 移动端长按不弹系统菜单
+      item.onclick = () => { if (longPressed) { longPressed = false; return; } loadWork(w.id); };
+      item.title = '点击载入 · 长按重命名';
       list.appendChild(item);
     }
   } catch (e) {
@@ -619,22 +706,92 @@ async function renderWorks() {
   }
 }
 
+async function renameWork(w) {
+  const name = prompt('重命名作品', w.name);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { alert('作品名不能为空'); return; }
+  if (trimmed === w.name) return;
+  try {
+    await api(`/api/works/${w.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    renderWorks();
+  } catch (e) { alert(e.message); }
+}
+
+// ---------- 作品社区 ----------
+async function openCommunity() {
+  $('community-modal').style.display = 'flex';
+  const grid = $('community-grid');
+  grid.innerHTML = '<div class="community-empty">加载中…</div>';
+  $('community-count').textContent = '';
+  try {
+    const data = await api('/api/community?limit=120');
+    $('community-count').textContent = `共 ${data.total} 件`;
+    if (!data.works.length) {
+      grid.innerHTML = '<div class="community-empty">社区还没有作品，快去识别一张并「💾 转存」吧！</div>';
+      return;
+    }
+    grid.innerHTML = '';
+    for (const w of data.works) {
+      const card = document.createElement('div');
+      card.className = 'cwork' + (w.author === state.username ? ' mine' : '');
+      const img = document.createElement('img');
+      img.className = 'thumb';
+      img.loading = 'lazy';
+      img.src = `/api/works/${w.id}/thumb`;
+      img.alt = w.name;
+      const body = document.createElement('div');
+      body.className = 'body';
+      const nm = document.createElement('div');
+      nm.className = 'name'; nm.textContent = w.name;
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = `${w.rows}×${w.cols} · 👤 ${w.author}`
+        + (w.author === state.username ? '（我）' : '');
+      body.appendChild(nm); body.appendChild(meta);
+      card.appendChild(img); card.appendChild(body);
+      card.title = `点击载入「${w.name}」到工作台`;
+      card.onclick = () => loadCommunityWork(w);
+      grid.appendChild(card);
+    }
+  } catch (e) {
+    grid.innerHTML = `<div class="community-empty">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function loadCommunityWork(w) {
+  try {
+    const data = await api(`/api/community/${w.id}`);
+    applyLoadedWork(data);
+    $('community-modal').style.display = 'none';
+  } catch (e) { alert(e.message); }
+}
+
+// 把载入的作品数据套用到工作台（自己的作品和社区作品共用）
+function applyLoadedWork(data) {
+  state.canvasSize = data.canvas_size;
+  state.grid = data.grid;
+  state.activeCode = null;
+  state.lastRecognizedCodes = [];
+  $('rows').value = data.rows;
+  $('cols').value = data.cols;
+  $('rows').max = $('cols').max = state.canvasSize;
+  $('canvas-size-seg').querySelectorAll('button').forEach(x =>
+    x.classList.toggle('active', parseInt(x.dataset.size, 10) === state.canvasSize));
+  state.cellSize = computeCellSize(state.canvasSize);
+  renderCanvas(); renderColorBar(); renderStats(); updateBeadCount();
+  if (isMobile()) closeDrawers();
+}
+
 async function loadWork(id) {
   try {
     const data = await api(`/api/works/${id}`);
-    state.canvasSize = data.canvas_size;
-    state.grid = data.grid;
-    state.activeCode = null;
-    state.lastRecognizedCodes = [];
-    $('rows').value = data.rows;
-    $('cols').value = data.cols;
-    $('rows').max = $('cols').max = state.canvasSize;
-    $('canvas-size-seg').querySelectorAll('button').forEach(x =>
-      x.classList.toggle('active', parseInt(x.dataset.size, 10) === state.canvasSize));
-    state.cellSize = computeCellSize(state.canvasSize);
-    renderCanvas(); renderColorBar(); renderStats(); updateBeadCount();
+    applyLoadedWork(data);
     $('works-dropdown').style.display = 'none';
-    if (isMobile()) closeDrawers();
   } catch (e) { alert(e.message); }
 }
 
@@ -679,6 +836,7 @@ function bindEvents() {
   // 识别模式（智能 / 直接）
   $('recognize-mode-seg').querySelectorAll('button').forEach(b => {
     b.onclick = () => {
+      if (b.disabled) return;
       state.recognizeMode = b.dataset.mode;
       $('recognize-mode-seg').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
     };
@@ -707,6 +865,19 @@ function bindEvents() {
     const dd = $('works-dropdown');
     if (dd.style.display !== 'none' && !dd.contains(e.target) && e.target !== $('btn-works')) {
       dd.style.display = 'none';
+    }
+  });
+
+  // 作品社区
+  $('btn-community').onclick = openCommunity;
+  $('community-close').onclick = () => { $('community-modal').style.display = 'none'; };
+  $('community-modal').onclick = (e) => {
+    if (e.target === $('community-modal')) $('community-modal').style.display = 'none';
+  };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      $('community-modal').style.display = 'none';
+      $('works-dropdown').style.display = 'none';
     }
   });
 
@@ -793,7 +964,7 @@ async function init() {
   if (state.token) {
     try {
       const me = await api('/api/me');
-      applyAuth(state.token, me.username);
+      applyAuth(state.token, me.username, me.smart);
       return;
     } catch (e) {
       state.token = null; localStorage.removeItem('pb_token');

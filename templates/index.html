@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>红豆泥</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v={{ ver }}">
 </head>
 <body>
   <header class="topbar">
     <div class="brand"><img src="/static/favicon.svg" class="brand-icon" alt="">红豆泥</div>
     <div class="user-area" id="user-area" style="display:none">
-      <button id="btn-works" class="btn ghost">📁 我的作品</button>
+      <button id="btn-community" class="btn ghost">🌐<span class="btn-text"> 作品社区</span></button>
+      <button id="btn-works" class="btn ghost">📁<span class="btn-text"> 我的作品</span></button>
       <span id="user-info" class="user-info"></span>
       <button id="btn-logout" class="btn ghost">退出</button>
       <div id="works-dropdown" class="works-dropdown" style="display:none">
@@ -23,6 +24,17 @@
       </div>
     </div>
   </header>
+
+  <!-- 作品社区弹窗 -->
+  <div id="community-modal" class="community-modal" style="display:none">
+    <div class="community-card">
+      <div class="community-head">
+        <span>🌐 作品社区 <span id="community-count" class="muted"></span></span>
+        <button id="community-close" class="btn ghost small" type="button">✕</button>
+      </div>
+      <div id="community-grid" class="community-grid"></div>
+    </div>
+  </div>
 
   <!-- 整页登录门禁 -->
   <div id="auth-gate" class="auth-gate">
@@ -104,7 +116,7 @@
             <button data-mode="smart" class="active">智能识别</button>
             <button data-mode="direct">直接识别</button>
           </div>
-          <p class="tip">智能识别：颜色匹配 + 大模型读字兜底（白色系更准，慢）。直接识别：只按图纸颜色匹配（快，不用大模型）。</p>
+          <p class="tip" id="recognize-mode-tip">智能识别：颜色匹配 + 大模型读字兜底（白色系更准，慢）。直接识别：只按图纸颜色匹配（快，不用大模型）。</p>
         </section>
 
         <button id="btn-recognize" class="btn primary big">🎯 开始识别</button>
@@ -154,6 +166,6 @@
     <div id="drawer-mask" class="drawer-mask"></div>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v={{ ver }}"></script>
 </body>
 </html>

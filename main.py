@@ -15,7 +15,7 @@ import time
 from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image
@@ -79,6 +79,12 @@ def _init_db() -> None:
             " grid TEXT NOT NULL,"
             " created_at INTEGER NOT NULL)"
         )
+        # 用户名唯一性：表上的 UNIQUE 是大小写敏感的（test1 / Test1 会被当成两个人），
+        # 再加一个大小写不敏感的唯一索引，确保用户名（登录 key）真正唯一。
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_username_nocase "
+            "ON user (username COLLATE NOCASE)"
+        )
 
 
 _init_db()
@@ -132,12 +138,40 @@ def _require_user(authorization: Optional[str] = Header(None)) -> str:
 
 
 # ---------- 页面 ----------
+def _asset_version() -> str:
+    """前端静态资源版本号（取 app.js/style.css 最新修改时间）。
+
+    /static 由 StaticFiles 直接挂载，浏览器（尤其手机/微信内置浏览器）会强缓存
+    app.js、style.css，导致改了前端也看不到效果。给引用加上 ?v=<mtime> 后，
+    文件一改版本号就变，浏览器必然重新拉取。
+    """
+    latest = 0.0
+    for name in ("app.js", "style.css"):
+        path = os.path.join(BASE_DIR, "static", name)
+        try:
+            latest = max(latest, os.path.getmtime(path))
+        except OSError:
+            pass
+    return str(int(latest))
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+    resp = templates.TemplateResponse(request, "index.html", {"ver": _asset_version()})
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 # ---------- 用户 ----------
+# 智能识别（视觉模型读字兜底）白名单：只有这些用户可用，其余用户强制走直接识别。
+# 读字兜底会消耗反代 API 额度，故限制授权范围。
+_SMART_USERS = {"test1"}
+
+
+def _can_smart(username: str) -> bool:
+    return username.lower() in _SMART_USERS
+
+
 @app.post("/api/register")
 async def register(data: dict):
     username = (data.get("username") or "").strip()
@@ -146,6 +180,13 @@ async def register(data: dict):
         raise HTTPException(400, "用户名需 3-32 个字符")
     if len(password) < 6:
         raise HTTPException(400, "密码至少 6 位")
+    # 用户名唯一性检查（大小写不敏感，避免 test1 / Test1 视为两个账号）
+    with _get_db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM user WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+    if exists:
+        raise HTTPException(409, "用户名已存在")
     try:
         with _get_db() as conn:
             conn.execute(
@@ -154,23 +195,30 @@ async def register(data: dict):
             )
     except sqlite3.IntegrityError:
         raise HTTPException(409, "用户名已存在")
-    return {"token": _make_token(username), "username": username}
+    return {"token": _make_token(username), "username": username,
+            "smart": _can_smart(username)}
 
 
 @app.post("/api/login")
 async def login(data: dict):
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
+    # 大小写不敏感查找，但一律以库中记录的用户名为准（保证 token / 作品归属 key 唯一）
     with _get_db() as conn:
-        row = conn.execute("SELECT * FROM user WHERE username = ?", (username,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM user WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
     if not row or not _verify_password(password, row["password_hash"]):
         raise HTTPException(401, "用户名或密码错误")
-    return {"token": _make_token(username), "username": username}
+    canonical = row["username"]
+    return {"token": _make_token(canonical), "username": canonical,
+            "smart": _can_smart(canonical)}
 
 
 @app.get("/api/me")
 async def me(authorization: Optional[str] = Header(None)):
-    return {"username": _require_user(authorization)}
+    username = _require_user(authorization)
+    return {"username": username, "smart": _can_smart(username)}
 
 
 # ---------- 作品（个人缓存） ----------
@@ -237,6 +285,22 @@ async def get_work(wid: int, authorization: Optional[str] = Header(None)):
     return {**_work_summary(row), "grid": json.loads(row["grid"])}
 
 
+@app.patch("/api/works/{wid}")
+async def rename_work(wid: int, data: dict, authorization: Optional[str] = Header(None)):
+    username = _require_user(authorization)
+    name = (data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, "作品名不能为空")
+    with _get_db() as conn:
+        cur = conn.execute(
+            "UPDATE work SET name = ? WHERE id = ? AND username = ?",
+            (name[:64], wid, username),
+        )
+    if cur.rowcount == 0:
+        raise HTTPException(404, "作品不存在")
+    return {"ok": True, "name": name[:64]}
+
+
 @app.delete("/api/works/{wid}")
 async def delete_work(wid: int, authorization: Optional[str] = Header(None)):
     username = _require_user(authorization)
@@ -247,6 +311,106 @@ async def delete_work(wid: int, authorization: Optional[str] = Header(None)):
     if cur.rowcount == 0:
         raise HTTPException(404, "作品不存在")
     return {"ok": True}
+
+
+# ---------- 作品社区（所有人的作品，公开可见） ----------
+@app.get("/api/community")
+async def community_works(limit: int = 60, offset: int = 0,
+                          authorization: Optional[str] = Header(None)):
+    """社区作品列表：所有用户的作品，按时间倒序。只返回名字/作者/大小。"""
+    _require_user(authorization)
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    with _get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, username, name, canvas_size, rows, cols "
+            "FROM work ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        total = conn.execute("SELECT COUNT(*) AS n FROM work").fetchone()["n"]
+    works = [{
+        "id": r["id"],
+        "author": r["username"],
+        "name": r["name"],
+        "canvas_size": r["canvas_size"],
+        "rows": r["rows"],
+        "cols": r["cols"],
+    } for r in rows]
+    return {"works": works, "total": total, "offset": offset, "limit": limit}
+
+
+@app.get("/api/community/{wid}")
+async def community_work_detail(wid: int, authorization: Optional[str] = Header(None)):
+    """载入社区里任意作品到工作台（公开可读）。"""
+    _require_user(authorization)
+    with _get_db() as conn:
+        row = conn.execute("SELECT * FROM work WHERE id = ?", (wid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "作品不存在")
+    return {
+        "id": row["id"],
+        "author": row["username"],
+        "name": row["name"],
+        "canvas_size": row["canvas_size"],
+        "rows": row["rows"],
+        "cols": row["cols"],
+        "grid": json.loads(row["grid"]),
+    }
+
+
+@app.get("/api/works/{wid}/thumb")
+async def work_thumb(wid: int):
+    """作品缩略图 PNG（公开，供社区/作品列表 <img> 直接引用）。
+
+    按 grid 里实际有内容的格子边界（bounding box）渲染，不依赖保存时记录的
+    rows/cols，保证作品内容完整展示、不被裁切。
+    """
+    with _get_db() as conn:
+        row = conn.execute("SELECT grid FROM work WHERE id = ?", (wid,)).fetchone()
+    if not row:
+        raise HTTPException(404, "作品不存在")
+    try:
+        grid = json.loads(row["grid"])
+    except Exception:  # noqa: BLE001
+        raise HTTPException(500, "作品数据损坏")
+
+    # 有内容格子的边界
+    r0, r1, c0, c1 = len(grid), -1, len(grid[0]) if grid else 0, -1
+    for r, line in enumerate(grid):
+        for c, code in enumerate(line):
+            if code:
+                if r < r0: r0 = r
+                if r > r1: r1 = r
+                if c < c0: c0 = c
+                if c > c1: c1 = c
+    if r1 < 0:  # 空作品
+        img = Image.new("RGB", (16, 16), (255, 255, 255))
+    else:
+        h, w = r1 - r0 + 1, c1 - c0 + 1
+        cell = max(1, min(8, 320 // max(h, w)))
+        img = Image.new("RGB", (w * cell, h * cell), (255, 255, 255))
+        px = img.load()
+        for r in range(r0, r1 + 1):
+            line = grid[r]
+            for c in range(c0, min(c1 + 1, len(line))):
+                code = line[c]
+                if not code:
+                    continue
+                color = palette.get_by_code(code)
+                if not color:
+                    continue
+                rgb = tuple(color["rgb"])
+                bx, by = (c - c0) * cell, (r - r0) * cell
+                for dy in range(cell):
+                    for dx in range(cell):
+                        px[bx + dx, by + dy] = rgb
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return Response(
+        content=buf.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ---------- 色库 ----------
@@ -283,7 +447,10 @@ async def recognize_pattern(
     direct: int = Form(0),
     authorization: Optional[str] = Header(None),
 ):
-    _require_user(authorization)
+    username = _require_user(authorization)
+    # 智能识别（读字兜底）仅授权用户可用，其余强制走直接识别（服务端强制，不信前端）
+    if not _can_smart(username):
+        direct = 1
 
     if canvas_size not in (52, 104):
         raise HTTPException(400, "画布尺寸只能是 52 或 104")
