@@ -16,7 +16,7 @@ from PIL import Image
 
 from vision_config import API_KEY, BASE
 
-MODEL = "gpt-5.6-sol"
+MODEL = "deepseek-v4-flash-vision-exp"
 
 _CODE_RE = re.compile(r"([A-HM])\s*(\d{1,2})")
 _TOKEN_RE = re.compile(r"[A-HM]\d{1,2}|-")

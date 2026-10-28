@@ -21,6 +21,7 @@ const state = {
   lastRecognizedCodes: [], // 本次识别传入的预选色快照（用于统计含 0 颗显示）
   recognizeMode: 'smart', // 'smart' 智能识别（含大模型读字兜底）| 'direct' 直接识别（纯颜色匹配）
   smartAllowed: false,    // 是否被授权使用智能识别（后端白名单控制）
+  locked: false,          // 画布缩放锁定：锁定时格子大小固定（缩放失效）
 };
 
 const $ = (id) => document.getElementById(id);
@@ -69,6 +70,46 @@ function computeCellSize(n) {
   return 12;
 }
 
+// ---------- 画布缩放锁定 / 记住大小 ----------
+const REMEMBER_KEY = (n) => `pb_cell_${n}`;
+
+function getRememberedCell(n) {
+  const v = parseInt(localStorage.getItem(REMEMBER_KEY(n)), 10);
+  return (v >= 3 && v <= 40) ? v : null;
+}
+function setRememberedCell(n, v) {
+  localStorage.setItem(REMEMBER_KEY(n), String(v));
+}
+
+// 「记住大小」：存储当前格子大小（每次按都覆盖更新，52/104 各自独立存）
+function rememberCellSize() {
+  setRememberedCell(state.canvasSize, state.cellSize);
+  const btn = $('tool-remember');
+  btn.textContent = '✓ 已记住';
+  setTimeout(() => { btn.textContent = '📌 记住大小'; }, 1200);
+}
+
+// 「锁定」：进入全屏专注模式——隐藏顶栏/侧栏/统计/工具栏，画布全屏，
+// 颜色栏竖排移到最右边，右上角只留「解除锁定」；同时格子大小锁到记住值。
+function toggleLock() {
+  state.locked = !state.locked;
+  if (state.locked) {
+    const remembered = getRememberedCell(state.canvasSize);
+    if (remembered) state.cellSize = remembered;
+    else setRememberedCell(state.canvasSize, state.cellSize);  // 还没记住过就先记当前
+  }
+  document.body.classList.toggle('fullscreen', state.locked);
+  $('btn-unlock').style.display = state.locked ? '' : 'none';
+  updateLockUI();
+  renderCanvas();
+}
+
+function updateLockUI() {
+  const btn = $('tool-lock');
+  if (state.locked) { btn.textContent = '🔒 已锁定'; btn.classList.add('active'); }
+  else { btn.textContent = '🔒 锁定'; btn.classList.remove('active'); }
+}
+
 // ---------- 抽屉（移动端左右滑出面板）----------
 function openDrawer(which) {
   $(which).classList.add('open');
@@ -78,6 +119,26 @@ function closeDrawers() {
   $('sidebar').classList.remove('open');
   $('stats').classList.remove('open');
   $('drawer-mask').classList.remove('show');
+}
+
+// 抽屉左右滑动拉回收起：sidebar 向左滑、stats 向右滑超过阈值即收起
+function enableSwipeClose(which, dir) {
+  const el = $(which);
+  let sx = 0, sy = 0;
+  el.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    sx = t.clientX; sy = t.clientY;
+  }, { passive: true });
+  el.addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    const dx = t.clientX - sx;
+    const dy = t.clientY - sy;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      if ((dir === 'left' && dx < 0) || (dir === 'right' && dx > 0)) {
+        closeDrawers();
+      }
+    }
+  }, { passive: true });
 }
 function toggleDrawer(which) {
   const el = $(which);
@@ -203,6 +264,59 @@ function renderColorPicker() {
   }
 }
 function updateSelCount() { $('sel-count').textContent = `已选 ${state.selectedCodes.size} 色`; }
+
+// ---------- 画笔颜色下拉窗（221 色） ----------
+let brushSeries = null;
+
+function renderBrushSeriesTabs() {
+  const wrap = $('brush-series-tabs');
+  wrap.innerHTML = '';
+  for (const s of state.palette.series) {
+    const b = document.createElement('button');
+    b.textContent = s;
+    b.onclick = () => {
+      brushSeries = s;
+      wrap.querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
+      renderBrushPicker();
+    };
+    wrap.appendChild(b);
+  }
+  brushSeries = state.palette.series[0];
+  wrap.querySelector('button').classList.add('active');
+  renderBrushPicker();
+}
+
+function renderBrushPicker() {
+  const wrap = $('brush-color-picker');
+  wrap.innerHTML = '';
+  const codes = state.seriesColors[brushSeries] || [];
+  for (const code of codes) {
+    const c = state.codeToColor[code];
+    const sw = document.createElement('div');
+    sw.className = 'swatch' + (state.activeCode === code ? ' selected' : '');
+    sw.style.background = c.hex;
+    sw.style.color = textColorFor(c.hex);
+    sw.textContent = code;
+    sw.title = `${code} ${c.hex}`;
+    sw.onclick = () => {
+      state.activeCode = code;
+      setTool('brush');
+      closeBrushColor();
+    };
+    wrap.appendChild(sw);
+  }
+}
+
+function openBrushColor() {
+  const dd = $('brush-color-dropdown');
+  if (dd.style.display !== 'none') { dd.style.display = 'none'; return; }
+  dd.style.display = 'block';
+  renderBrushSeriesTabs();
+}
+
+function closeBrushColor() {
+  $('brush-color-dropdown').style.display = 'none';
+}
 
 // ---------- 上传 ----------
 function onFileChange(e) {
@@ -806,6 +920,8 @@ function bindEvents() {
   $('sidebar-toggle').onclick = () => { if (isMobile()) toggleDrawer('sidebar'); else toggleSidebar(); };
   $('stats-toggle').onclick = () => { if (isMobile()) toggleDrawer('stats'); };
   $('drawer-mask').onclick = closeDrawers;
+  enableSwipeClose('sidebar', 'left');
+  enableSwipeClose('stats', 'right');
 
   // 抽屉把手
   $('drawer-settings').onclick = () => openDrawer('sidebar');
@@ -828,7 +944,12 @@ function bindEvents() {
       $('canvas-size-seg').querySelectorAll('button').forEach(x => x.classList.toggle('active', x === b));
       $('rows').max = $('cols').max = state.canvasSize;
       if (state.grid && state.grid.length !== state.canvasSize) state.grid = null;
-      state.cellSize = computeCellSize(state.canvasSize);
+      // 锁定时切换到新画布也用「记住的大小」；未锁定用默认
+      if (state.locked) {
+        state.cellSize = getRememberedCell(state.canvasSize) || computeCellSize(state.canvasSize);
+      } else {
+        state.cellSize = computeCellSize(state.canvasSize);
+      }
       renderCanvas(); renderColorBar(); renderStats(); updateBeadCount();
     };
   });
@@ -847,9 +968,20 @@ function bindEvents() {
 
   // 工具栏
   $('tool-brush').onclick = () => setTool('brush');
+  $('tool-brush-color').onclick = openBrushColor;
+  $('brush-color-close').onclick = closeBrushColor;
+  document.addEventListener('click', (e) => {
+    const dd = $('brush-color-dropdown');
+    if (dd.style.display !== 'none' && !dd.contains(e.target) && e.target !== $('tool-brush-color')) {
+      dd.style.display = 'none';
+    }
+  });
   $('tool-eraser').onclick = () => setTool('eraser');
   $('tool-view').onclick = () => setTool('view');
   $('tool-picker').onclick = () => setTool('picker');
+  $('tool-remember').onclick = rememberCellSize;
+  $('tool-lock').onclick = toggleLock;
+  $('btn-unlock').onclick = toggleLock;
 
   // 识别 / 清空 / 导出
   $('btn-recognize').onclick = doRecognize;
@@ -919,6 +1051,7 @@ function bindEvents() {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pinching && pointers.size >= 2) {
+      if (state.locked) return;  // 锁定：缩放失效
       const d = pinchDistance();
       if (pinchDist > 0 && d > 0) {
         const ratio = d / pinchDist;
@@ -948,6 +1081,7 @@ function bindEvents() {
 
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (state.locked) return;  // 锁定：缩放失效
     const delta = e.deltaY < 0 ? 1 : -1;
     state.cellSize = Math.min(40, Math.max(3, state.cellSize + delta));
     renderCanvas();

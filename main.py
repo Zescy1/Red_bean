@@ -497,14 +497,17 @@ async def recognize_pattern(
     # 颜色匹配「模糊」的格子（米白/浅黄等白色系）→ 视觉模型读印的色号文字兜底。
     # direct=1 时为「直接识别」：跳过读字兜底，只按图纸颜色匹配（快、不依赖大模型）。
     vision_read = 0
+    vision_error = None
     if not direct and ambiguous and box is not None:
         try:
             read = read_cell_codes(image, box, ambiguous, palette, rows, cols)
             for (r, c), code in read.items():
                 grid[r][c] = code
                 vision_read += 1
-        except Exception:  # noqa: BLE001
-            pass  # 读字失败则保留颜色匹配结果
+        except Exception as e:  # noqa: BLE001
+            vision_error = str(e)
+            # 打印到 journalctl，避免 key 失效/网络故障被静默吞掉、无从排查
+            print(f"[vision] 读字兜底失败（{len(ambiguous)} 个模糊格）: {e}", flush=True)
 
     return {
         "canvas_size": canvas_size,
@@ -514,5 +517,6 @@ async def recognize_pattern(
         "detected": box_info,
         "ambiguous_count": len(ambiguous),
         "vision_read": vision_read,
+        "vision_error": vision_error,
         "direct": bool(direct),
     }

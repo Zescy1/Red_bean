@@ -127,12 +127,23 @@
       <div class="toolbar">
         <button id="drawer-settings" class="tool drawer-handle" type="button">⚙ 设置</button>
         <button id="tool-brush" class="tool">🖌 画笔</button>
+        <button id="tool-brush-color" class="tool">🎨 画笔颜色</button>
         <button id="tool-eraser" class="tool">🧽 橡皮擦</button>
         <button id="tool-view" class="tool active">🖱 点击</button>
         <button id="tool-picker" class="tool">💧 取色</button>
         <span class="bead-count" id="bead-count">共 0 颗</span>
         <button id="tool-save" class="tool">💾 转存</button>
+        <button id="tool-remember" class="tool">📌 记住大小</button>
+        <button id="tool-lock" class="tool">🔒 锁定</button>
         <button id="drawer-stats" class="tool drawer-handle" type="button">📊 统计</button>
+        <div id="brush-color-dropdown" class="brush-color-dropdown" style="display:none">
+          <div class="brush-color-head">
+            <span>画笔颜色（221 色）</span>
+            <button id="brush-color-close" class="btn ghost small" type="button">✕</button>
+          </div>
+          <div id="brush-series-tabs" class="series-tabs"></div>
+          <div id="brush-color-picker" class="color-picker"></div>
+        </div>
         <span class="hint">滚轮缩放 · 点击/拖动改色</span>
       </div>
       <div class="canvas-scroll" id="canvas-scroll">
@@ -165,6 +176,9 @@
 
     <div id="drawer-mask" class="drawer-mask"></div>
   </main>
+
+  <!-- 锁定全屏模式：右上角解除锁定（平时隐藏，锁定时显示） -->
+  <button id="btn-unlock" class="btn-unlock" style="display:none">🔓 解除锁定</button>
 
   <script src="/static/app.js?v={{ ver }}"></script>
 </body>

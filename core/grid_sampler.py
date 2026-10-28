@@ -21,8 +21,8 @@ _TEXT_DARK = 130
 _TEXT_MIN_PIXELS = 6
 
 # 颜色匹配「模糊度」阈值：top1/top2 的 ΔE 差距 < 此值时判「分不清」，
-# 交视觉模型读印在格子里的色号文字兜底（用户指定阈值 4）。
-_AMBIGUITY_MARGIN = 4
+# 交视觉模型读印在格子里的色号文字兜底。
+_AMBIGUITY_MARGIN = 8
 
 
 def _cell_rect(x0: float, y0: float, cell_w: float, cell_h: float,
